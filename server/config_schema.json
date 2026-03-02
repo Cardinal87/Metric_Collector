@@ -3,6 +3,29 @@
     "title": "Server config",
     "type": "object",
     "properties":{
+        "logger":{
+            "type": "object",
+            "maxAge":{
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30
+            },
+            "maxSize":{
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10240
+            },
+            "maxBackups":{
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 7
+            },
+            "compress":{
+                "type": "boolean",
+                "default": false
+            },
+            "required": ["maxAge", "maxSize", "maxBackups"]
+        },
         "nodes": {
             "type": "array",
             "minItems": 1,
@@ -23,5 +46,5 @@
             }
         }
     },
-    "required": ["nodes"]
+    "required": ["nodes", "logger"]
 }
