@@ -27,14 +27,14 @@ func (this *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetM
 		hostname = name
 	}
 
-	var cpuPercent float32 = -1
+	cpuPercent := float32(-1)
 	if cpu, err := cpu.Percent(time.Second, false); err != nil {
 		log.Printf("WARNING: Unable to retrieve cpu load: %v", err)
 	} else {
 		cpuPercent = float32(cpu[0])
 	}
 
-	var memPercent float32 = -1
+	memPercent := float32(-1)
 	if mem, err := mem.VirtualMemory(); err != nil {
 		log.Printf("WARNING: Unable to retrieve virtual memory load: %v", err)
 	} else {

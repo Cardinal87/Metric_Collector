@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	metricsv1 "github.com/Cardinal87/Metric_Collector/gRPC/gen/go/metrics/v1"
@@ -34,19 +36,37 @@ type Logger struct {
 }
 
 type Config struct {
-	Nodes  []Node `json:"nodes"`
-	Logger Logger `json:"logger"`
+	Nodes        []Node         `json:"nodes"`
+	Logger       Logger         `json:"logger"`
+	MethodConfig []MethodConfig `json:"methodConfig"`
+}
+
+type MethodConfig struct {
+	Name        []MethodName `json:"name"`
+	RetryPolicy RetryPolicy  `json:"retryPolicy"`
+}
+
+type MethodName struct {
+	Service string `json:"service"`
+	Method  string `json:"method"`
+}
+
+type RetryPolicy struct {
+	MaxAttempts          int      `json:"maxAttempts"`
+	InitialBackoff       string   `json:"initialBackoff"`
+	MaxBackoff           string   `json:"maxBackoff"`
+	BackoffMultiplier    float64  `json:"backoffMultiplier"`
+	RetryableStatusCodes []string `json:"retryableStatusCodes"`
 }
 
 func parseConfig(config_path string) (config *Config, err error) {
-	schemaLoader := gojsonschema.NewBytesLoader(config_schema_bytes)
-
-	abs_config_path, err := filepath.Abs(config_path)
+	configBytes, err := os.ReadFile(config_path)
 	if err != nil {
 		return nil, err
 	}
-	configLoader := gojsonschema.NewReferenceLoader("file://" + abs_config_path)
 
+	schemaLoader := gojsonschema.NewBytesLoader(config_schema_bytes)
+	configLoader := gojsonschema.NewBytesLoader(configBytes)
 	result, err := gojsonschema.Validate(schemaLoader, configLoader)
 	if err != nil {
 		return nil, err
@@ -57,19 +77,7 @@ func parseConfig(config_path string) (config *Config, err error) {
 		}
 		return nil, fmt.Errorf("Incorrect config file format")
 	}
-
-	configFile, err := os.Open(abs_config_path)
-	if err != nil {
-		return nil, err
-	}
-	defer configFile.Close()
-
-	bytes, err := io.ReadAll(configFile)
-	if err != nil {
-		return nil, err
-	}
-
-	err = json.Unmarshal(bytes, &config)
+	err = json.Unmarshal(configBytes, &config)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +89,7 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := client.GetMetrics(ctx, req)
+	resp, err := client.GetMetrics(ctx, req, grpc.WaitForReady(true))
 	if err != nil {
 		return err
 	}
@@ -89,38 +97,42 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 	return nil
 }
 
-func handleNode(node Node, stopChan chan struct{}) {
+func handleNode(node Node, stopChan chan struct{}, wg *sync.WaitGroup, methodConfig string) {
+	defer wg.Done()
+
 	socket := node.Ip + ":11111"
 	duration := time.Duration(node.Frequency) * time.Second
 	ticker := time.NewTicker(duration)
+	defer ticker.Stop()
 
-	conn, err := grpc.NewClient(socket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(socket,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(methodConfig))
 	if err != nil {
 		log.Printf("ERROR: Failed to connect to node %s: %v", node.Ip, err)
 		return
 	}
+	defer conn.Close()
+
 	client := metricsv1.NewMetricServiceClient(conn)
+
 	log.Printf("INFO: Started %s monitoring", node.Ip)
-	go func() {
-		defer conn.Close()
-		defer ticker.Stop()
 
-		for {
-			select {
-			case _ = <-stopChan:
-				log.Printf("INFO: Stopped %s monitoring", node.Ip)
+	for {
+		select {
+		case _ = <-stopChan:
+			log.Printf("INFO: Stopped %s monitoring", node.Ip)
+			return
+
+		case _ = <-ticker.C:
+			err := getMetrics(client)
+			if err != nil {
+				log.Printf("ERROR: Unable to retrieve metrics from %s: %v", node.Ip, err)
 				return
-
-			case _ = <-ticker.C:
-				err := getMetrics(client)
-				if err != nil {
-					log.Printf("ERROR: Unable to retrieve metrics from %s: %v", node.Ip, err)
-					return
-				}
-
 			}
+
 		}
-	}()
+	}
 }
 
 func configureLogger(maxSize int, maxAge int, maxBackups int, compress bool) {
@@ -140,7 +152,7 @@ func configureLogger(maxSize int, maxAge int, maxBackups int, compress bool) {
 func main() {
 	config, err := parseConfig("config.json")
 	if err != nil {
-		log.Fatal("FATAL: Unable to read config file", err)
+		log.Fatal("FATAL: Unable to read config file: ", err)
 	}
 
 	configureLogger(config.Logger.MaxSize,
@@ -149,19 +161,26 @@ func main() {
 		config.Logger.Compress)
 
 	log.Printf("INFO: Application started")
-	stopChan := make(chan struct{})
-	defer func() {
-		close(stopChan)
-		time.Sleep(250 * time.Millisecond)
-	}()
 
+	methodConfigStructure := struct {
+		MethodConfig []MethodConfig `json:"methodConfig"`
+	}{MethodConfig: config.MethodConfig}
+	methodConfigBytes, _ := json.Marshal(methodConfigStructure)
+	methodConfig := string(methodConfigBytes)
+
+	stopChan := make(chan struct{})
+
+	var wg sync.WaitGroup
 	for _, node := range config.Nodes {
-		go handleNode(node, stopChan)
+		wg.Add(1)
+		go handleNode(node, stopChan, &wg, methodConfig)
 	}
 
-	fmt.Println("Press Enter to stop")
-	fmt.Println()
-	fmt.Scanln()
-	log.Printf("INFO: Stopping host")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+	close(stopChan)
 
+	log.Printf("INFO: Stopping host")
+	wg.Wait()
 }
