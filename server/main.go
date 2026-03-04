@@ -17,47 +17,14 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/gorm"
 )
 
 //go:embed config_schema.json
 var config_schema_bytes []byte
-
-type Node struct {
-	Ip        string `json:"ip"`
-	Frequency int    `json:"frequency"` //polling frequency in seconds
-}
-
-type Logger struct {
-	MaxAge     int  `json:"maxAge"`
-	MaxSize    int  `json:"maxSize"`
-	MaxBackups int  `json:"maxBackups"`
-	Compress   bool `json:"compress"`
-}
-
-type Config struct {
-	Nodes        []Node         `json:"nodes"`
-	Logger       Logger         `json:"logger"`
-	MethodConfig []MethodConfig `json:"methodConfig"`
-}
-
-type MethodConfig struct {
-	Name        []MethodName `json:"name"`
-	RetryPolicy RetryPolicy  `json:"retryPolicy"`
-}
-
-type MethodName struct {
-	Service string `json:"service"`
-	Method  string `json:"method"`
-}
-
-type RetryPolicy struct {
-	MaxAttempts          int      `json:"maxAttempts"`
-	InitialBackoff       string   `json:"initialBackoff"`
-	MaxBackoff           string   `json:"maxBackoff"`
-	BackoffMultiplier    float64  `json:"backoffMultiplier"`
-	RetryableStatusCodes []string `json:"retryableStatusCodes"`
-}
+var database *gorm.DB
 
 func parseConfig(config_path string) (config *Config, err error) {
 	configBytes, err := os.ReadFile(config_path)
@@ -89,11 +56,27 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	start := time.Now()
 	resp, err := client.GetMetrics(ctx, req, grpc.WaitForReady(true))
+	rtt := time.Since(start)
+
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Name: %s\nCpu Percent: %v\nMemory Percent: %v\n", resp.Name, resp.CpuPercent, resp.MemPercent)
+
+	if len(resp.Name) == 0 {
+		pr, _ := peer.FromContext(ctx)
+		log.Printf("WARNING: received metric from %s contains an empty hostname and will be discarded", pr.Addr)
+	}
+
+	metricUnit := &MetricUnit{
+		Time:       time.Now(),
+		Hostname:   resp.Name,
+		CpuPercent: resp.CpuPercent,
+		MemPercent: resp.MemPercent,
+		RTT:        float64(rtt),
+	}
+	sendMetrics(metricUnit, database)
 	return nil
 }
 
@@ -159,6 +142,9 @@ func main() {
 		config.Logger.MaxAge,
 		config.Logger.MaxBackups,
 		config.Logger.Compress)
+
+	db := configureDatabase(config.ConnectionString)
+	database = db
 
 	log.Printf("INFO: Application started")
 
