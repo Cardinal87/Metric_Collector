@@ -1,7 +1,13 @@
 package main
 
-import "time"
+import (
+	"sync"
+	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
+)
+
+// Server structures
 type Node struct {
 	Ip        string `json:"ip"`
 	Frequency int    `json:"frequency"` //polling frequency in seconds
@@ -39,6 +45,7 @@ type RetryPolicy struct {
 	RetryableStatusCodes []string `json:"retryableStatusCodes"`
 }
 
+// Database structures
 type MetricUnit struct {
 	Time       time.Time `gorm:"primaryKey;not null"`
 	Hostname   string    `gorm:"index;not null"`
@@ -49,4 +56,24 @@ type MetricUnit struct {
 
 func (m MetricUnit) TableName() string {
 	return "metrics"
+}
+
+// UI structures
+type model struct {
+	viewport  viewport.Model
+	rawLogs   string
+	state     int
+	dots      int
+	options   Options
+	readyChan chan Options
+}
+
+type Options struct {
+	wg           *sync.WaitGroup
+	stopChan     chan (struct{})
+	methodConfig string
+}
+
+type ServerInitializedMessage struct {
+	opt Options
 }

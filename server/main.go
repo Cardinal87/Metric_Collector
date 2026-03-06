@@ -5,15 +5,14 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/signal"
+	"slices"
 	"sync"
-	"syscall"
 	"time"
 
 	metricsv1 "github.com/Cardinal87/Metric_Collector/gRPC/gen/go/metrics/v1"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/xeipuuv/gojsonschema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -25,6 +24,7 @@ import (
 //go:embed config_schema.json
 var config_schema_bytes []byte
 var database *gorm.DB
+var failed_nodes []Node
 
 func parseConfig(config_path string) (config *Config, err error) {
 	configBytes, err := os.ReadFile(config_path)
@@ -67,6 +67,7 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 	if len(resp.Name) == 0 {
 		pr, _ := peer.FromContext(ctx)
 		log.Printf("WARNING: received metric from %s contains an empty hostname and will be discarded", pr.Addr)
+		return nil
 	}
 
 	metricUnit := &MetricUnit{
@@ -81,41 +82,51 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 }
 
 func handleNode(node Node, stopChan chan struct{}, wg *sync.WaitGroup, methodConfig string) {
-	defer wg.Done()
-
 	socket := node.Ip + ":11111"
 	duration := time.Duration(node.Frequency) * time.Second
 	ticker := time.NewTicker(duration)
-	defer ticker.Stop()
 
 	conn, err := grpc.NewClient(socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(methodConfig))
+
 	if err != nil {
+		if !slices.Contains(failed_nodes, node) {
+			failed_nodes = append(failed_nodes, node)
+		}
 		log.Printf("ERROR: Failed to connect to node %s: %v", node.Ip, err)
+		ticker.Stop()
 		return
 	}
-	defer conn.Close()
 
 	client := metricsv1.NewMetricServiceClient(conn)
 
 	log.Printf("INFO: Started %s monitoring", node.Ip)
 
-	for {
-		select {
-		case _ = <-stopChan:
-			log.Printf("INFO: Stopped %s monitoring", node.Ip)
-			return
+	wg.Go(func() {
+		defer conn.Close()
+		defer ticker.Stop()
 
-		case _ = <-ticker.C:
-			err := getMetrics(client)
-			if err != nil {
-				log.Printf("ERROR: Unable to retrieve metrics from %s: %v", node.Ip, err)
+		for {
+			select {
+			case _ = <-stopChan:
+				log.Printf("INFO: Stopped %s monitoring", node.Ip)
 				return
+
+			case _ = <-ticker.C:
+				err := getMetrics(client)
+				if err != nil {
+					log.Printf("ERROR: Unable to retrieve metrics from %s: %v", node.Ip, err)
+					if !slices.Contains(failed_nodes, node) {
+						failed_nodes = append(failed_nodes, node)
+					}
+					return
+				}
+
 			}
 
 		}
-	}
+	})
 }
 
 func configureLogger(maxSize int, maxAge int, maxBackups int, compress bool) {
@@ -128,45 +139,64 @@ func configureLogger(maxSize int, maxAge int, maxBackups int, compress bool) {
 		Compress:   compress,
 	}
 
-	multi := io.MultiWriter(os.Stderr, &writer)
-	log.SetOutput(multi)
+	log.SetOutput(&writer)
 }
 
 func main() {
-	config, err := parseConfig("config.json")
-	if err != nil {
-		log.Fatal("FATAL: Unable to read config file: ", err)
-	}
-
-	configureLogger(config.Logger.MaxSize,
-		config.Logger.MaxAge,
-		config.Logger.MaxBackups,
-		config.Logger.Compress)
-
-	db := configureDatabase(config.ConnectionString)
-	database = db
-
-	log.Printf("INFO: Application started")
-
-	methodConfigStructure := struct {
-		MethodConfig []MethodConfig `json:"methodConfig"`
-	}{MethodConfig: config.MethodConfig}
-	methodConfigBytes, _ := json.Marshal(methodConfigStructure)
-	methodConfig := string(methodConfigBytes)
-
+	readyChan := make(chan Options)
 	stopChan := make(chan struct{})
-
 	var wg sync.WaitGroup
-	for _, node := range config.Nodes {
-		wg.Add(1)
-		go handleNode(node, stopChan, &wg, methodConfig)
+
+	go func() {
+		config, err := parseConfig("config.json")
+		if err != nil {
+			log.Fatal("FATAL: Unable to read config file: ", err)
+		}
+
+		configureLogger(config.Logger.MaxSize,
+			config.Logger.MaxAge,
+			config.Logger.MaxBackups,
+			config.Logger.Compress)
+
+		db := configureDatabase(config.ConnectionString)
+		database = db
+
+		log.Printf("INFO: Application started")
+
+		methodConfigStructure := struct {
+			MethodConfig []MethodConfig `json:"methodConfig"`
+		}{MethodConfig: config.MethodConfig}
+		methodConfigBytes, _ := json.Marshal(methodConfigStructure)
+		methodConfig := string(methodConfigBytes)
+
+		var outerWg sync.WaitGroup
+		for _, node := range config.Nodes {
+			outerWg.Go(func() { handleNode(node, stopChan, &wg, methodConfig) })
+		}
+
+		opt := Options{
+			wg:           &wg,
+			stopChan:     stopChan,
+			methodConfig: methodConfig,
+		}
+		readyChan <- opt
+		close(readyChan)
+	}()
+
+	defer func() {
+		close(stopChan)
+		log.Printf("INFO: Stopping host")
+		wg.Wait()
+	}()
+
+	model := initModel(readyChan)
+	p := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+		tea.WithMouseAllMotion())
+
+	if _, err := p.Run(); err != nil {
+		log.Fatalf("FATAL: Unexpected error on UI: %v", err)
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
-	close(stopChan)
-
-	log.Printf("INFO: Stopping host")
-	wg.Wait()
 }

@@ -105,10 +105,11 @@
                 "required": ["name", "retryPolicy"],
                 "additionalProperties": false
             }
+        },
+
+        "connectionString": {
+            "type": "string"
         }
-    },
-    "connectionString": {
-        "type": "string"
     },
     "required": ["nodes", "logger", "methodConfig", "connectionString"]
 }
