@@ -8,12 +8,12 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func configureDatabase(connectionString string) *gorm.DB {
+func configureDatabase(connectionString string) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.Open(connectionString), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		log.Fatalf("FATAL: Failed to connect to database: %v", err)
+		return nil, err
 	}
 
 	db.AutoMigrate(&MetricUnit{})
@@ -21,9 +21,9 @@ func configureDatabase(connectionString string) *gorm.DB {
 	query := "SELECT create_hypertable('metrics', 'time', if_not_exists => TRUE)"
 	err = db.Exec(query).Error
 	if err != nil {
-		log.Fatalf("FATAL: Failed to configure metrics hyperdtable: %v", err)
+		return nil, err
 	}
-	return db
+	return db, nil
 }
 
 func sendMetrics(metricUnit *MetricUnit, db *gorm.DB) {

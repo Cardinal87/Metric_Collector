@@ -152,12 +152,14 @@ func configureLogger(maxSize int, maxAge int, maxBackups int, compress bool) {
 func main() {
 	readyChan := make(chan Options)
 	stopChan := make(chan struct{})
+	errorCtx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
 	go func() {
 		config, err := parseConfig("config.json")
 		if err != nil {
-			log.Fatal("FATAL: Unable to read config file: ", err)
+			log.Printf("FATAL: Unable to read config file: %v", err)
+			cancel()
 		}
 
 		configureLogger(config.Logger.MaxSize,
@@ -165,7 +167,11 @@ func main() {
 			config.Logger.MaxBackups,
 			config.Logger.Compress)
 
-		db := configureDatabase(config.ConnectionString)
+		db, err := configureDatabase(config.ConnectionString)
+		if err != nil {
+			log.Printf("FATAL: Unable to configure database: %v", err)
+			cancel()
+		}
 		database = db
 
 		log.Printf("INFO: Application started")
@@ -201,6 +207,11 @@ func main() {
 		model,
 		tea.WithAltScreen(),
 		tea.WithMouseAllMotion())
+
+	go func() {
+		<-errorCtx.Done()
+		p.Quit()
+	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("FATAL: Unexpected error on UI: %v", err)
