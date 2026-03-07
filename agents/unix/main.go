@@ -19,9 +19,11 @@ import (
 
 type metricAgent struct {
 	metricsv1.UnimplementedMetricServiceServer
+	lastStats   map[string]net_metric.IOCountersStat
+	lastRequest time.Time
 }
 
-func (this *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetMetricsRequest) (*metricsv1.GetMetricsResponse, error) {
+func (m *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetMetricsRequest) (*metricsv1.GetMetricsResponse, error) {
 	hostname := "Undefined"
 	if name, err := os.Hostname(); err != nil {
 		log.Printf("WARNING: Unable to retrieve hostname: %v", err)
@@ -30,7 +32,7 @@ func (this *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetM
 	}
 
 	cpuPercent := float32(-1)
-	if cpu, err := cpu.Percent(time.Second, false); err != nil {
+	if cpu, err := cpu.Percent(0, false); err != nil {
 		log.Printf("WARNING: Unable to retrieve cpu load: %v", err)
 	} else {
 		cpuPercent = float32(cpu[0])
@@ -69,31 +71,25 @@ func (this *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetM
 	}
 
 	var netInfo []*metricsv1.NetMetric
-	c1, err := net_metric.IOCounters(true)
+	stats, err := net_metric.IOCounters(true)
 	if err != nil {
 		log.Printf("WARNING: Unable to retrieve network info: %v", err)
 	} else {
-		time.Sleep(1 * time.Second)
+		interval := time.Since(m.lastRequest)
+		for _, curStat := range stats {
+			if prevStat, ok := m.lastStats[curStat.Name]; ok {
+				sendSpeed := float64((curStat.BytesSent - prevStat.BytesSent)) / interval.Seconds() / 1024.0
+				recvSpeed := float64((curStat.BytesRecv - prevStat.BytesRecv)) / interval.Seconds() / 1024.0
 
-		mp := make(map[string]net_metric.IOCountersStat)
-		for _, stat := range c1 {
-			mp[stat.Name] = stat
-		}
-		c2, _ := net_metric.IOCounters(true)
-
-		for _, stat2 := range c2 {
-			if stat1, ok := mp[stat2.Name]; ok {
-				name := stat2.Name
-				sendSpeed := float64((stat2.BytesSent - stat1.BytesSent))
-				recvSpeed := float64((stat2.BytesRecv - stat1.BytesRecv))
 				netInfo = append(netInfo, &metricsv1.NetMetric{
-					Interface: name,
+					Interface: curStat.Name,
 					RecvSpeed: recvSpeed,
 					SendSpeed: sendSpeed,
 				})
-
 			}
+			m.lastStats[curStat.Name] = curStat
 		}
+		m.lastRequest = time.Now()
 	}
 
 	return &metricsv1.GetMetricsResponse{Name: hostname,
@@ -112,7 +108,17 @@ func main() {
 	defer listener.Close()
 
 	server := grpc.NewServer()
-	metricsv1.RegisterMetricServiceServer(server, &metricAgent{})
+
+	_, err = cpu.Percent(0, false) // init cpu collector
+	agent := &metricAgent{}
+	agent.lastStats = make(map[string]net_metric.IOCountersStat)
+	stats, _ := net_metric.IOCounters(true)
+	for _, network := range stats {
+		agent.lastStats[network.Name] = network
+	}
+	agent.lastRequest = time.Now()
+
+	metricsv1.RegisterMetricServiceServer(server, agent)
 	go func() {
 		err = server.Serve(listener)
 		if err != nil {

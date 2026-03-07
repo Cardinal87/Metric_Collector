@@ -105,7 +105,6 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 		Networks:     datatypes.JSON(networkBytes),
 		AgentVersion: resp.AgentVerison,
 	}
-	log.Printf("%v", resp)
 	sendMetrics(metricUnit, database)
 	return nil
 }
