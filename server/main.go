@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +18,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -72,14 +75,37 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 		log.Printf("WARNING: received metric from %s contains an empty hostname and will be discarded", pr.Addr)
 		return nil
 	}
+	m := protojson.MarshalOptions{
+		EmitUnpopulated: true,
+	}
+
+	var disksBytes []byte
+	var diskParts []string
+	for _, disk := range resp.Disks {
+		bytes, _ := m.Marshal(disk)
+		diskParts = append(diskParts, string(bytes))
+	}
+	disksBytes = []byte("[" + strings.Join(diskParts, ",") + "]")
+
+	var networkBytes []byte
+	var networkParts []string
+	for _, network := range resp.Networks {
+		bytes, _ := m.Marshal(network)
+		networkParts = append(networkParts, string(bytes))
+	}
+	networkBytes = []byte("[" + strings.Join(networkParts, ",") + "]")
 
 	metricUnit := &MetricUnit{
-		Time:       time.Now(),
-		Hostname:   resp.Name,
-		CpuPercent: resp.CpuPercent,
-		MemPercent: resp.MemPercent,
-		RTT:        float64(rtt),
+		Time:         time.Now(),
+		Hostname:     resp.Name,
+		CpuPercent:   resp.CpuPercent,
+		MemPercent:   resp.MemPercent,
+		RTT:          float64(rtt),
+		Disks:        datatypes.JSON(disksBytes),
+		Networks:     datatypes.JSON(networkBytes),
+		AgentVersion: resp.AgentVerison,
 	}
+	log.Printf("%v", resp)
 	sendMetrics(metricUnit, database)
 	return nil
 }

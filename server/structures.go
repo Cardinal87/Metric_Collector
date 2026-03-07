@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
+	"gorm.io/datatypes"
 )
 
 // Server structures
@@ -47,11 +48,14 @@ type RetryPolicy struct {
 
 // Database structures
 type MetricUnit struct {
-	Time       time.Time `gorm:"primaryKey;not null"`
-	Hostname   string    `gorm:"index;not null"`
-	CpuPercent float32
-	MemPercent float32
-	RTT        float64
+	Time         time.Time `gorm:"primaryKey;not null"`
+	Hostname     string    `gorm:"index;not null"`
+	CpuPercent   float32
+	MemPercent   float32
+	RTT          float64
+	Disks        datatypes.JSON `gorm:"type:jsonb"`
+	Networks     datatypes.JSON `gorm:"type:jsonb"`
+	AgentVersion string
 }
 
 func (m MetricUnit) TableName() string {

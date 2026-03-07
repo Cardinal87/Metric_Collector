@@ -13,4 +13,20 @@ message GetMetricsResponse {
   string name = 1;
   float cpu_percent = 2;
   float mem_percent = 3;
+  repeated DiskMetric disks = 4;
+  repeated NetMetric networks = 5;
+  string agent_verison = 6;
+}
+
+message DiskMetric {
+  string device = 1;
+  double usage_percent = 2;
+  double total = 3;
+  double free = 4;
+}
+
+message NetMetric {
+  string interface = 1;
+  double send_speed = 2;
+  double recv_speed = 3;
 }
