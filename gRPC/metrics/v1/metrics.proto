@@ -15,7 +15,7 @@ message GetMetricsResponse {
   float mem_percent = 3;
   repeated DiskMetric disks = 4;
   repeated NetMetric networks = 5;
-  string agent_verison = 6;
+  string agent_versison = 6;
 }
 
 message DiskMetric {

@@ -93,11 +93,11 @@ func (m *metricAgent) GetMetrics(ctx context.Context, request *metricsv1.GetMetr
 	}
 
 	return &metricsv1.GetMetricsResponse{Name: hostname,
-		CpuPercent:   cpuPercent,
-		MemPercent:   memPercent,
-		Disks:        diskInfo,
-		Networks:     netInfo,
-		AgentVerison: "unix-v1"}, nil
+		CpuPercent:    cpuPercent,
+		MemPercent:    memPercent,
+		Disks:         diskInfo,
+		Networks:      netInfo,
+		AgentVersison: "unix-v1"}, nil
 }
 
 func main() {

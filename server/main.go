@@ -103,7 +103,7 @@ func getMetrics(client metricsv1.MetricServiceClient) error {
 		RTT:          float64(rtt),
 		Disks:        datatypes.JSON(disksBytes),
 		Networks:     datatypes.JSON(networkBytes),
-		AgentVersion: resp.AgentVerison,
+		AgentVersion: resp.AgentVersison,
 	}
 	sendMetrics(metricUnit, database)
 	return nil
