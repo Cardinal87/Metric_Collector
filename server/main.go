@@ -24,7 +24,10 @@ import (
 //go:embed config_schema.json
 var config_schema_bytes []byte
 var database *gorm.DB
-var failed_nodes []Node
+var (
+	failed_nodes []Node
+	mu           sync.RWMutex
+)
 
 func parseConfig(config_path string) (config *Config, err error) {
 	configBytes, err := os.ReadFile(config_path)
@@ -91,9 +94,11 @@ func handleNode(node Node, stopChan chan struct{}, wg *sync.WaitGroup, methodCon
 		grpc.WithDefaultServiceConfig(methodConfig))
 
 	if err != nil {
+		mu.Lock()
 		if !slices.Contains(failed_nodes, node) {
 			failed_nodes = append(failed_nodes, node)
 		}
+		mu.Unlock()
 		log.Printf("ERROR: Failed to connect to node %s: %v", node.Ip, err)
 		ticker.Stop()
 		return
@@ -117,9 +122,11 @@ func handleNode(node Node, stopChan chan struct{}, wg *sync.WaitGroup, methodCon
 				err := getMetrics(client)
 				if err != nil {
 					log.Printf("ERROR: Unable to retrieve metrics from %s: %v", node.Ip, err)
+					mu.Lock()
 					if !slices.Contains(failed_nodes, node) {
 						failed_nodes = append(failed_nodes, node)
 					}
+					mu.Unlock()
 					return
 				}
 

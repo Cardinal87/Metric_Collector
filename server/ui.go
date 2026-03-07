@@ -32,8 +32,10 @@ func restoreConnection(opt Options) tea.Cmd {
 			return "1-complete"
 		}
 		cached := make([]Node, len(failed_nodes))
+		mu.Lock()
 		copy(cached, failed_nodes)
 		clear(failed_nodes)
+		mu.Unlock()
 
 		var outerWg sync.WaitGroup
 		for _, node := range cached {
